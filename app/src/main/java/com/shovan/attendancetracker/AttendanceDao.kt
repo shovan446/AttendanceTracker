@@ -44,4 +44,7 @@ interface AttendanceDao {
 
     @Delete
     suspend fun deleteSubject(subject: Subject)
+
+    @Query("DELETE FROM attendance_records WHERE subjectId = :subId AND dateLong = :date")
+    suspend fun deleteRecordForDate(subId: Int, date: Long)
 }

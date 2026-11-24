@@ -1,6 +1,7 @@
 package com.shovan.attendancetracker
 
 import android.os.Bundle
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.material.icons.filled.Close
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -64,15 +66,29 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prefs = getSharedPreferences("attendance_tracker_prefs", Context.MODE_PRIVATE)
+
         setContent {
-            var isDarkMode by remember { mutableStateOf(false) }
-            val themeMode = remember(isDarkMode) { isDarkMode }
+            val systemDark = isSystemInDarkTheme()
+            var isDarkMode by remember {
+                mutableStateOf(
+                    if (prefs.contains("dark_mode")) prefs.getBoolean("dark_mode", false)
+                    else systemDark
+                )
+            }
 
             MaterialTheme(
-                colorScheme = if (themeMode) darkColorScheme() else lightColorScheme()
+                colorScheme = if (isDarkMode) darkColorScheme() else lightColorScheme()
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MainAppScaffold(viewModel, themeMode, onThemeChange = { isDarkMode = it })
+                    MainAppScaffold(
+                        viewModel = viewModel,
+                        isDarkMode = isDarkMode,
+                        onThemeChange = { enabled ->
+                            isDarkMode = enabled
+                            prefs.edit().putBoolean("dark_mode", enabled).apply()
+                        }
+                    )
                 }
             }
         }
@@ -156,7 +172,11 @@ fun CalendarTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
     val selectedDate by viewModel.selectedDate.collectAsState()
     val scheduledSubjects by viewModel.scheduledSubjectsForSelectedDate.collectAsState()
     val attendanceRecords by viewModel.attendanceRecordsForSelectedDate.collectAsState()
-    
+    val subjectsWithStats by viewModel.subjectsWithStatsState.collectAsState()
+    val statsBySubjectId = remember(subjectsWithStats) {
+        subjectsWithStats.associateBy { it.subject.id }
+    }
+
     var showDatePicker by remember { mutableStateOf(false) }
 
     if (showDatePicker) {
@@ -208,42 +228,131 @@ fun CalendarTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(scheduledSubjects) { subject ->
+                items(scheduledSubjects, key = { it.id }) { subject ->
                     val record = attendanceRecords[subject.id]
-                    AttendanceMarkingCard(subject, record, isDarkMode) { status ->
-                        viewModel.logAttendance(subject.id, selectedDate, status)
-                    }
+                    val stats = statsBySubjectId[subject.id]
+                    AttendanceMarkingCard(
+                        subject = subject,
+                        record = record,
+                        stats = stats,
+                        isDarkMode = isDarkMode,
+                        onStatusChange = { status ->
+                            if (record?.status == status) {
+                                viewModel.removeAttendance(subject.id, selectedDate)
+                            } else {
+                                viewModel.logAttendance(subject.id, selectedDate, status)
+                            }
+                        },
+                        onClearStatus = {
+                            viewModel.removeAttendance(subject.id, selectedDate)
+                        }
+                    )
                 }
             }
         }
     }
 }
-
 @Composable
-fun AttendanceMarkingCard(subject: Subject, record: AttendanceRecord?, isDarkMode: Boolean, onStatusChange: (String) -> Unit) {
+fun AttendanceMarkingCard(
+    subject: Subject,
+    record: AttendanceRecord?,
+    stats: SubjectWithStats?,
+    isDarkMode: Boolean,
+    onStatusChange: (String) -> Unit,
+    onClearStatus: () -> Unit
+) {
     val status = record?.status ?: "PENDING"
-    
+
     val targetColor = when(status) {
         "PRESENT" -> if (isDarkMode) Color(0xFF1B5E20) else Color(0xFFE8F5E9)
         "ABSENT" -> if (isDarkMode) Color(0xFFB71C1C) else Color(0xFFFFEBEE)
         "CANCELLED" -> if (isDarkMode) Color(0xFF455A64) else Color(0xFFECEFF1)
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
-    
+
     val animatedColor by animateColorAsState(
         targetValue = targetColor,
         animationSpec = tween(durationMillis = 200),
         label = "CardColorAnimation"
     )
-    
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = animatedColor)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(subject.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text("Status: $status", style = MaterialTheme.typography.bodySmall)
-            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = subject.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (stats != null) {
+                    val isSafe = stats.attendancePercentage >= subject.minAttendancePercentage
+                    Text(
+                        text = String.format(Locale.getDefault(), "%.1f%% (%d/%d)", stats.attendancePercentage, stats.presentClasses, stats.totalClasses),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isSafe) {
+                            if (isDarkMode) Color(0xFF81C784) else Color(0xFF2E7D32)
+                        } else {
+                            if (isDarkMode) Color(0xFFE57373) else Color(0xFFC62828)
+                        }
+                    )
+                }
+            }
+
+            if (stats != null) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = stats.statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Status: $status",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                )
+                if (status != "PENDING") {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { onClearStatus() }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Clear Attendance",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Clear",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AttendanceButton("Present", status == "PRESENT", Color(0xFF4CAF50), Modifier.weight(1f)) { onStatusChange("PRESENT") }
                 AttendanceButton("Absent", status == "ABSENT", Color(0xFFF44336), Modifier.weight(1f)) { onStatusChange("ABSENT") }
@@ -252,7 +361,6 @@ fun AttendanceMarkingCard(subject: Subject, record: AttendanceRecord?, isDarkMod
         }
     }
 }
-
 @Composable
 fun AttendanceButton(text: String, isSelected: Boolean, color: Color, modifier: Modifier, onClick: () -> Unit) {
     Button(

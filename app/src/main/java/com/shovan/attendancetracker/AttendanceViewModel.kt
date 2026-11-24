@@ -78,6 +78,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun removeAttendance(subjectId: Int, date: LocalDate) {
+        viewModelScope.launch {
+            dao.deleteRecordForDate(subjectId, dateToLong(date))
+        }
+    }
+
     fun dateToLong(date: LocalDate): Long {
         return date.atStartOfDay().toEpochSecond(ZoneOffset.UTC)
     }
