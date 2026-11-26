@@ -47,4 +47,41 @@ interface AttendanceDao {
 
     @Query("DELETE FROM attendance_records WHERE subjectId = :subId AND dateLong = :date")
     suspend fun deleteRecordForDate(subId: Int, date: Long)
+
+    @Query("SELECT * FROM subjects")
+    suspend fun getAllSubjectsOnce(): List<Subject>
+
+    @Query("SELECT * FROM timetable")
+    suspend fun getAllTimetableSlotsOnce(): List<TimetableSlot>
+
+    @Query("SELECT * FROM attendance_records")
+    suspend fun getAllAttendanceRecordsOnce(): List<AttendanceRecord>
+
+    @Query("DELETE FROM attendance_records")
+    suspend fun clearAllAttendanceRecords()
+
+    @Query("DELETE FROM timetable")
+    suspend fun clearAllTimetableSlots()
+
+    @Query("DELETE FROM subjects")
+    suspend fun clearAllSubjects()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSubjects(subjects: List<Subject>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTimetableSlots(slots: List<TimetableSlot>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAttendanceRecords(records: List<AttendanceRecord>)
+
+    @Query("""
+        SELECT DISTINCT subjects.* FROM subjects
+        INNER JOIN timetable ON subjects.id = timetable.subjectId 
+        WHERE timetable.dayOfWeek = :dayOfWeek
+    """)
+    suspend fun getSubjectsForDayOnce(dayOfWeek: Int): List<Subject>
+
+    @Query("SELECT * FROM attendance_records WHERE dateLong = :date")
+    suspend fun getRecordsForDateOnce(date: Long): List<AttendanceRecord>
 }

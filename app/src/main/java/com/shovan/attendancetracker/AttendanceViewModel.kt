@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneOffset
+import org.json.JSONArray
+import org.json.JSONObject
 
 class AttendanceViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -78,6 +80,27 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun markAllForSelectedDate(status: String) {
+        val subjects = scheduledSubjectsForSelectedDate.value
+        val date = _selectedDate.value
+        if (subjects.isEmpty()) return
+
+        subjects.forEach { subject ->
+            logAttendance(subject.id, date, status)
+        }
+    }
+
+    fun clearAllForSelectedDate() {
+        val subjects = scheduledSubjectsForSelectedDate.value
+        val date = _selectedDate.value
+        if (subjects.isEmpty()) return
+
+        subjects.forEach { subject ->
+            removeAttendance(subject.id, date)
+        }
+    }
+
+
     fun removeAttendance(subjectId: Int, date: LocalDate) {
         viewModelScope.launch {
             dao.deleteRecordForDate(subjectId, dateToLong(date))
@@ -104,6 +127,101 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun removeSubjectFromDay(subjectId: Int, dayOfWeek: Int) {
         viewModelScope.launch {
             dao.deleteTimetableSlot(subjectId, dayOfWeek)
+        }
+    }
+
+    suspend fun exportBackupJson(): String {
+        val subjects = dao.getAllSubjectsOnce()
+        val slots = dao.getAllTimetableSlotsOnce()
+        val records = dao.getAllAttendanceRecordsOnce()
+
+        val root = JSONObject().apply {
+            put("version", 1)
+            put("exportedAt", System.currentTimeMillis())
+
+            put("subjects", JSONArray().apply {
+                subjects.forEach { s ->
+                    put(JSONObject().apply {
+                        put("id", s.id)
+                        put("name", s.name)
+                        put("minAttendancePercentage", s.minAttendancePercentage)
+                        put("initialPresent", s.initialPresent)
+                        put("initialTotal", s.initialTotal)
+                    })
+                }
+            })
+
+            put("timetableSlots", JSONArray().apply {
+                slots.forEach { slot ->
+                    put(JSONObject().apply {
+                        put("subjectId", slot.subjectId)
+                        put("dayOfWeek", slot.dayOfWeek)
+                        put("timeString", slot.timeString)
+                    })
+                }
+            })
+
+            put("attendanceRecords", JSONArray().apply {
+                records.forEach { r ->
+                    put(JSONObject().apply {
+                        put("subjectId", r.subjectId)
+                        put("dateLong", r.dateLong)
+                        put("status", r.status)
+                    })
+                }
+            })
+        }
+        return root.toString(2)
+    }
+
+    suspend fun importBackupJson(jsonString: String): Result<String> {
+        return try {
+            val root = JSONObject(jsonString)
+            val subjectsArr = root.getJSONArray("subjects")
+            val slotsArr = root.getJSONArray("timetableSlots")
+            val recordsArr = root.getJSONArray("attendanceRecords")
+
+            val subjects = (0 until subjectsArr.length()).map { i ->
+                val obj = subjectsArr.getJSONObject(i)
+                Subject(
+                    id = obj.getInt("id"),
+                    name = obj.getString("name"),
+                    minAttendancePercentage = obj.getInt("minAttendancePercentage"),
+                    initialPresent = obj.optInt("initialPresent", 0),
+                    initialTotal = obj.optInt("initialTotal", 0)
+                )
+            }
+
+            val slots = (0 until slotsArr.length()).map { i ->
+                val obj = slotsArr.getJSONObject(i)
+                TimetableSlot(
+                    subjectId = obj.getInt("subjectId"),
+                    dayOfWeek = obj.getInt("dayOfWeek"),
+                    timeString = obj.optString("timeString", "")
+                )
+            }
+
+            val records = (0 until recordsArr.length()).map { i ->
+                val obj = recordsArr.getJSONObject(i)
+                AttendanceRecord(
+                    subjectId = obj.getInt("subjectId"),
+                    dateLong = obj.getLong("dateLong"),
+                    status = obj.getString("status")
+                )
+            }
+
+            // Clear child tables first to respect foreign keys, then restore
+            dao.clearAllAttendanceRecords()
+            dao.clearAllTimetableSlots()
+            dao.clearAllSubjects()
+
+            dao.insertSubjects(subjects)
+            dao.insertTimetableSlots(slots)
+            dao.insertAttendanceRecords(records)
+
+            Result.success("Restored ${subjects.size} subjects & ${records.size} records")
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 }
