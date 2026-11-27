@@ -29,16 +29,21 @@ class AttendanceReminderWorker(
 
         val today = LocalDate.now()
         val dayOfWeek = today.dayOfWeek.value // 1 = Monday .. 7 = Sunday
-        val todayLong = today.toEpochDay()
+        val todayLong = today.atStartOfDay().toEpochSecond(java.time.ZoneOffset.UTC)
 
         val db = AttendanceDatabase.getDatabase(applicationContext)
         val dao = db.attendanceDao()
 
-        val scheduledSubjects = dao.getSubjectsForDayOnce(dayOfWeek)
-        if (scheduledSubjects.isEmpty()) return Result.success()
+        val scheduledSlots = dao.getScheduledSlotsForDayOnce(dayOfWeek)
+        if (scheduledSlots.isEmpty()) return Result.success()
 
-        val loggedSubjectIds = dao.getRecordsForDateOnce(todayLong).map { it.subjectId }.toSet()
-        val pendingCount = scheduledSubjects.count { it.id !in loggedSubjectIds }
+        val todayRecords = dao.getRecordsForDateOnce(todayLong)
+        val loggedSlotIds = todayRecords.map { it.slotId }.toSet()
+        val legacyLoggedSubjectIds = todayRecords.filter { it.slotId == 0 }.map { it.subjectId }.toSet()
+
+        val pendingCount = scheduledSlots.count { item ->
+            item.slot.slotId !in loggedSlotIds && item.subject.id !in legacyLoggedSubjectIds
+        }
 
         if (pendingCount > 0) {
             showReminderNotification(pendingCount)
@@ -46,7 +51,6 @@ class AttendanceReminderWorker(
 
         return Result.success()
     }
-
     private fun showReminderNotification(pendingCount: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS)

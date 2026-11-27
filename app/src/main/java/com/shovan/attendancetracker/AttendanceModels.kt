@@ -1,8 +1,11 @@
 package com.shovan.attendancetracker
 
+import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
+import androidx.room.Relation
 
 @Entity(tableName = "subjects")
 data class Subject(
@@ -13,7 +16,7 @@ data class Subject(
     val initialTotal: Int = 0
 )
 
-// NEW: Stores which subjects happen on which days
+// Stores which subjects happen on which days (supports multiple slots per subject per day)
 @Entity(
     tableName = "timetable",
     foreignKeys = [
@@ -23,7 +26,8 @@ data class Subject(
             childColumns = ["subjectId"],
             onDelete = ForeignKey.CASCADE
         )
-    ]
+    ],
+    indices = [Index(value = ["subjectId"])]
 )
 data class TimetableSlot(
     @PrimaryKey(autoGenerate = true) val slotId: Int = 0,
@@ -41,11 +45,26 @@ data class TimetableSlot(
             childColumns = ["subjectId"],
             onDelete = ForeignKey.CASCADE
         )
+    ],
+    indices = [
+        Index(value = ["subjectId"]),
+        Index(value = ["slotId"])
     ]
 )
 data class AttendanceRecord(
     @PrimaryKey(autoGenerate = true) val recordId: Int = 0,
     val subjectId: Int,
-    val dateLong: Long, // Epoch timestamp of the specific calendar day
-    val status: String  // "PRESENT", "ABSENT", "CANCELLED"
+    val slotId: Int = 0, // Links directly to TimetableSlot.slotId for multiple classes per day
+    val dateLong: Long,  // Epoch timestamp of the specific calendar day
+    val status: String   // "PRESENT", "ABSENT", "CANCELLED"
+)
+
+// Relation model used by AttendanceDao to fetch each individual scheduled slot along with its Subject
+data class ScheduledSlotWithSubject(
+    @Embedded val slot: TimetableSlot,
+    @Relation(
+        parentColumn = "subjectId",
+        entityColumn = "id"
+    )
+    val subject: Subject
 )

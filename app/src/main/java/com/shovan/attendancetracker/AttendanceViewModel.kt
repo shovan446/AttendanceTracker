@@ -34,15 +34,25 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    val scheduledSubjectsForSelectedDate: StateFlow<List<Subject>> = _selectedDate
-        .flatMapLatest { date -> dao.getSubjectsForDay(date.dayOfWeek.value) }
+    val scheduledSlotsForSelectedDate: StateFlow<List<ScheduledSlotWithSubject>> = _selectedDate
+        .flatMapLatest { date -> dao.getScheduledSlotsForDay(date.dayOfWeek.value) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    val attendanceRecordsForSelectedDate: StateFlow<Map<Int, AttendanceRecord>> = _selectedDate
-        .flatMapLatest { date -> dao.getRecordsForDate(dateToLong(date)) }
-        .map { records -> records.associateBy { it.subjectId } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+    val attendanceRecordsForSelectedDate = combine(
+    _selectedDate.flatMapLatest { date -> dao.getRecordsForDate(dateToLong(date)) },
+    scheduledSlotsForSelectedDate
+    ) { records, slots ->
+        val map = mutableMapOf<Int, AttendanceRecord>()
+        records.filter { it.slotId != 0 }.forEach { record ->
+            map[record.slotId] = record
+        }
+        records.filter { it.slotId == 0 }.forEach { legacy ->
+            slots.firstOrNull { it.subject.id == legacy.subjectId && !map.containsKey(it.slot.slotId) }
+                ?.let { map[it.slot.slotId] = legacy }
+        }
+        map
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     fun selectDate(date: LocalDate) {
         _selectedDate.value = date
@@ -62,71 +72,82 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { dao.deleteSubject(subject) }
     }
 
-    fun assignSubjectToDay(subjectId: Int, dayOfWeek: Int) {
+    fun assignSubjectToDay(subjectId: Int, dayOfWeek: Int, timeString: String = "Scheduled") {
         viewModelScope.launch {
-            dao.insertTimetableSlot(TimetableSlot(subjectId = subjectId, dayOfWeek = dayOfWeek, timeString = "Scheduled"))
+            dao.insertTimetableSlot(
+                TimetableSlot(
+                    subjectId = subjectId,
+                    dayOfWeek = dayOfWeek,
+                    timeString = timeString.ifBlank { "Scheduled" }
+                )
+            )
         }
     }
 
-    fun logAttendance(subjectId: Int, date: LocalDate, status: String) {
+    fun logAttendance(subjectId: Int, slotId: Int, date: LocalDate, status: String) {
         viewModelScope.launch {
             val dateLong = dateToLong(date)
-            val existing = dao.getRecordForDate(subjectId, dateLong)
-            if (existing != null) {
-                dao.insertRecord(existing.copy(status = status))
-            } else {
-                dao.insertRecord(AttendanceRecord(subjectId = subjectId, dateLong = dateLong, status = status))
-            }
+            dao.deleteRecordForSlot(subjectId, slotId, dateLong)
+            dao.deleteRecordForSlot(subjectId, 0, dateLong)
+            dao.insertRecord(
+                AttendanceRecord(
+                    subjectId = subjectId,
+                    slotId = slotId,
+                    dateLong = dateLong,
+                    status = status
+                )
+            )
         }
     }
 
     fun markAllForSelectedDate(status: String) {
-        val subjects = scheduledSubjectsForSelectedDate.value
+        val slots = scheduledSlotsForSelectedDate.value
         val date = _selectedDate.value
-        if (subjects.isEmpty()) return
+        if (slots.isEmpty()) return
 
-        subjects.forEach { subject ->
-            logAttendance(subject.id, date, status)
+        slots.forEach { item ->
+            logAttendance(item.subject.id, item.slot.slotId, date, status)
         }
     }
 
     fun clearAllForSelectedDate() {
-        val subjects = scheduledSubjectsForSelectedDate.value
+        val slots = scheduledSlotsForSelectedDate.value
         val date = _selectedDate.value
-        if (subjects.isEmpty()) return
+        if (slots.isEmpty()) return
 
-        subjects.forEach { subject ->
-            removeAttendance(subject.id, date)
+        slots.forEach { item ->
+            removeAttendance(item.subject.id, item.slot.slotId, date)
         }
     }
 
-
-    fun removeAttendance(subjectId: Int, date: LocalDate) {
+    fun removeAttendance(subjectId: Int, slotId: Int, date: LocalDate) {
         viewModelScope.launch {
-            dao.deleteRecordForDate(subjectId, dateToLong(date))
+            val dateLong = dateToLong(date)
+            dao.deleteRecordForSlot(subjectId, slotId, dateLong)
+            dao.deleteRecordForSlot(subjectId, 0, dateLong)
         }
     }
 
     fun dateToLong(date: LocalDate): Long {
         return date.atStartOfDay().toEpochSecond(ZoneOffset.UTC)
     }
-    
+
     // For Timetable view selection
     private val _selectedDayOfWeek = MutableStateFlow(LocalDate.now().dayOfWeek.value)
     val selectedDayOfWeek: StateFlow<Int> = _selectedDayOfWeek
-    
+
     fun selectDay(day: Int) {
         _selectedDayOfWeek.value = day
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    val timetableSubjectsForSelectedDay: StateFlow<List<Subject>> = _selectedDayOfWeek
-        .flatMapLatest { day -> dao.getSubjectsForDay(day) }
+    val timetableSlotsForSelectedDay: StateFlow<List<ScheduledSlotWithSubject>> = _selectedDayOfWeek
+        .flatMapLatest { day -> dao.getScheduledSlotsForDay(day) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun removeSubjectFromDay(subjectId: Int, dayOfWeek: Int) {
+    fun removeTimetableSlot(slotId: Int) {
         viewModelScope.launch {
-            dao.deleteTimetableSlot(subjectId, dayOfWeek)
+            dao.deleteTimetableSlotById(slotId)
         }
     }
 
@@ -136,7 +157,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val records = dao.getAllAttendanceRecordsOnce()
 
         val root = JSONObject().apply {
-            put("version", 1)
+            put("version", 2)
             put("exportedAt", System.currentTimeMillis())
 
             put("subjects", JSONArray().apply {
@@ -154,6 +175,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             put("timetableSlots", JSONArray().apply {
                 slots.forEach { slot ->
                     put(JSONObject().apply {
+                        put("slotId", slot.slotId)
                         put("subjectId", slot.subjectId)
                         put("dayOfWeek", slot.dayOfWeek)
                         put("timeString", slot.timeString)
@@ -165,6 +187,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 records.forEach { r ->
                     put(JSONObject().apply {
                         put("subjectId", r.subjectId)
+                        put("slotId", r.slotId)
                         put("dateLong", r.dateLong)
                         put("status", r.status)
                     })
@@ -195,6 +218,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             val slots = (0 until slotsArr.length()).map { i ->
                 val obj = slotsArr.getJSONObject(i)
                 TimetableSlot(
+                    slotId = obj.optInt("slotId", 0),
                     subjectId = obj.getInt("subjectId"),
                     dayOfWeek = obj.getInt("dayOfWeek"),
                     timeString = obj.optString("timeString", "")
@@ -205,6 +229,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val obj = recordsArr.getJSONObject(i)
                 AttendanceRecord(
                     subjectId = obj.getInt("subjectId"),
+                    slotId = obj.optInt("slotId", 0),
                     dateLong = obj.getLong("dateLong"),
                     status = obj.getString("status")
                 )

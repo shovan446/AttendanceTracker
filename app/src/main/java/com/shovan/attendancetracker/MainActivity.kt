@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
@@ -598,7 +599,7 @@ fun GlassCard(
 @Composable
 fun CalendarTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
     val selectedDate by viewModel.selectedDate.collectAsState()
-    val scheduledSubjects by viewModel.scheduledSubjectsForSelectedDate.collectAsState()
+    val scheduledSlots by viewModel.scheduledSlotsForSelectedDate.collectAsState()
     val attendanceRecords by viewModel.attendanceRecordsForSelectedDate.collectAsState()
     val subjectsWithStats by viewModel.subjectsWithStatsState.collectAsState()
     val statsBySubjectId = remember(subjectsWithStats) {
@@ -612,17 +613,17 @@ fun CalendarTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
         (0..6).map { monday.plusDays(it.toLong()) }
     }
 
-    val allMarkedPresent = remember(scheduledSubjects, attendanceRecords) {
-        scheduledSubjects.isNotEmpty() && scheduledSubjects.all { attendanceRecords[it.id]?.status == "PRESENT" }
+    val allMarkedPresent = remember(scheduledSlots, attendanceRecords) {
+        scheduledSlots.isNotEmpty() && scheduledSlots.all { attendanceRecords[it.slot.slotId]?.status == "PRESENT" }
     }
-    val allMarkedAbsent = remember(scheduledSubjects, attendanceRecords) {
-        scheduledSubjects.isNotEmpty() && scheduledSubjects.all { attendanceRecords[it.id]?.status == "ABSENT" }
+    val allMarkedAbsent = remember(scheduledSlots, attendanceRecords) {
+        scheduledSlots.isNotEmpty() && scheduledSlots.all { attendanceRecords[it.slot.slotId]?.status == "ABSENT" }
     }
-    val allMarkedCancelled = remember(scheduledSubjects, attendanceRecords) {
-        scheduledSubjects.isNotEmpty() && scheduledSubjects.all { attendanceRecords[it.id]?.status == "CANCELLED" }
+    val allMarkedCancelled = remember(scheduledSlots, attendanceRecords) {
+        scheduledSlots.isNotEmpty() && scheduledSlots.all { attendanceRecords[it.slot.slotId]?.status == "CANCELLED" }
     }
-    val hasAnyMarked = remember(scheduledSubjects, attendanceRecords) {
-        scheduledSubjects.any { attendanceRecords[it.id] != null }
+    val hasAnyMarked = remember(scheduledSlots, attendanceRecords) {
+        scheduledSlots.any { attendanceRecords[it.slot.slotId] != null }
     }
 
     var showDatePicker by remember { mutableStateOf(false) }
@@ -766,7 +767,7 @@ fun CalendarTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
 
         Text("Scheduled Classes:", style = MaterialTheme.typography.titleSmall)
 
-        if (scheduledSubjects.isNotEmpty()) {
+        if (scheduledSlots.isNotEmpty()) {
             Spacer(modifier = Modifier.height(8.dp))
 
             val presentTint = if (isDarkMode) Color(0xFF68B994) else Color(0xFF2E6F52)
@@ -827,7 +828,7 @@ fun CalendarTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        if (scheduledSubjects.isEmpty()) {
+        if (scheduledSlots.isEmpty()) {
             GlassCard(isDarkMode = isDarkMode, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     text = "No classes scheduled for this day.",
@@ -840,23 +841,33 @@ fun CalendarTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
                 contentPadding = PaddingValues(bottom = 112.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(scheduledSubjects, key = { it.id }) { subject ->
-                    val record = attendanceRecords[subject.id]
+                items(scheduledSlots, key = { it.slot.slotId }) { item ->
+                    val subject = item.subject
+                    val slot = item.slot
+                    val record = attendanceRecords[slot.slotId]
                     val stats = statsBySubjectId[subject.id]
+                    val sameSubjectSlots = scheduledSlots.filter { it.subject.id == subject.id }
+                    val slotLabel = when {
+                        slot.timeString.isNotBlank() && slot.timeString != "Scheduled" -> slot.timeString
+                        sameSubjectSlots.size > 1 -> "Class ${sameSubjectSlots.indexOf(item) + 1}"
+                        else -> ""
+                    }
+
                     AttendanceMarkingCard(
                         subject = subject,
+                        slotLabel = slotLabel,
                         record = record,
                         stats = stats,
                         isDarkMode = isDarkMode,
                         onStatusChange = { status ->
                             if (record?.status == status) {
-                                viewModel.removeAttendance(subject.id, selectedDate)
+                                viewModel.removeAttendance(subject.id, slot.slotId, selectedDate)
                             } else {
-                                viewModel.logAttendance(subject.id, selectedDate, status)
+                                viewModel.logAttendance(subject.id, slot.slotId, selectedDate, status)
                             }
                         },
                         onClearStatus = {
-                            viewModel.removeAttendance(subject.id, selectedDate)
+                            viewModel.removeAttendance(subject.id, slot.slotId, selectedDate)
                         }
                     )
                 }
@@ -916,6 +927,7 @@ fun BatchActionPill(
 @Composable
 fun AttendanceMarkingCard(
     subject: Subject,
+    slotLabel: String = "",
     record: AttendanceRecord?,
     stats: SubjectWithStats?,
     isDarkMode: Boolean,
@@ -951,13 +963,36 @@ fun AttendanceMarkingCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = subject.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = subject.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (slotLabel.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkMode) 0.22f else 0.12f)
+                        ) {
+                            Text(
+                                text = slotLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
                 if (stats != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     val isSafe = stats.attendancePercentage >= subject.minAttendancePercentage
                     Text(
                         text = String.format(
@@ -1217,7 +1252,7 @@ fun TimetableTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
     val allSubjects by viewModel.allSubjects.collectAsState()
     val context = LocalContext.current
     val selectedDay by viewModel.selectedDayOfWeek.collectAsState()
-    val scheduledForDay by viewModel.timetableSubjectsForSelectedDay.collectAsState()
+    val scheduledForDay by viewModel.timetableSlotsForSelectedDay.collectAsState()
     val daysLabels = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
     var isEditMode by remember { mutableStateOf(false) }
 
@@ -1285,7 +1320,7 @@ fun TimetableTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
             if (targetEditMode) {
                 Column {
                     Text(
-                        "Tap to add/remove from ${daysLabels[selectedDay - 1]}:",
+                        "Assign classes on ${daysLabels[selectedDay - 1]} (tap + to add multiple slots):",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -1304,35 +1339,68 @@ fun TimetableTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             items(allSubjects, key = { it.id }) { subject ->
-                                val isAllocated = scheduledForDay.any { it.id == subject.id }
+                                val subjectSlots = scheduledForDay.filter { it.subject.id == subject.id }
+                                val assignedCount = subjectSlots.size
                                 GlassCard(
                                     isDarkMode = isDarkMode,
-                                    tintColor = if (isAllocated) {
+                                    tintColor = if (assignedCount > 0) {
                                         MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkMode) 0.22f else 0.12f)
                                     } else null,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(22.dp))
-                                        .clickable {
-                                            if (isAllocated) viewModel.removeSubjectFromDay(subject.id, selectedDay)
-                                            else viewModel.assignSubjectToDay(subject.id, selectedDay)
-                                        }
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(16.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Text(
-                                            text = if (isAllocated) "✓ ${subject.name}" else "+ Allocate ${subject.name}",
-                                            fontWeight = FontWeight.Medium,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        if (isAllocated) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = if (assignedCount > 0) "✓ ${subject.name}" else subject.name,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            if (assignedCount > 0) {
+                                                Text(
+                                                    text = if (assignedCount == 1) "1 class scheduled" else "$assignedCount classes scheduled",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                        if (assignedCount > 0) {
+                                            IconButton(
+                                                onClick = {
+                                                    triggerGlassHaptic(context)
+                                                    subjectSlots.lastOrNull()?.let { lastSlot ->
+                                                        viewModel.removeTimetableSlot(lastSlot.slot.slotId)
+                                                    }
+                                                }
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Delete,
+                                                    contentDescription = "Remove one slot",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                        FilledTonalButton(
+                                            onClick = {
+                                                triggerGlassHaptic(context)
+                                                val label = if (assignedCount == 0) "Scheduled" else "Class ${assignedCount + 1}"
+                                                viewModel.assignSubjectToDay(subject.id, selectedDay, label)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                        ) {
                                             Icon(
-                                                Icons.Default.Delete,
-                                                contentDescription = "Remove",
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(20.dp)
+                                                Icons.Default.Add,
+                                                contentDescription = "Add class slot",
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = if (assignedCount == 0) "Add" else "+1",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
                                             )
                                         }
                                     }
@@ -1358,13 +1426,42 @@ fun TimetableTabScreen(viewModel: AttendanceViewModel, isDarkMode: Boolean) {
                             contentPadding = PaddingValues(bottom = 112.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(scheduledForDay, key = { it.id }) { subject ->
+                            items(scheduledForDay, key = { it.slot.slotId }) { item ->
+                                val subject = item.subject
+                                val slot = item.slot
+                                val sameSubjectSlots = scheduledForDay.filter { it.subject.id == subject.id }
+                                val slotLabel = when {
+                                    slot.timeString.isNotBlank() && slot.timeString != "Scheduled" -> slot.timeString
+                                    sameSubjectSlots.size > 1 -> "Class ${sameSubjectSlots.indexOf(item) + 1}"
+                                    else -> ""
+                                }
+
                                 GlassCard(isDarkMode = isDarkMode, modifier = Modifier.fillMaxWidth()) {
                                     Row(
                                         modifier = Modifier.padding(18.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Text(subject.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                        Text(
+                                            text = subject.name,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (slotLabel.isNotEmpty()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkMode) 0.22f else 0.12f)
+                                            ) {
+                                                Text(
+                                                    text = slotLabel,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1614,7 +1711,7 @@ fun SettingsTabScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 116.dp)
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -1759,59 +1856,6 @@ fun SettingsTabScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("About Developer", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(12.dp))
-
-        GlassCard(isDarkMode = isDarkMode, modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    "Connect with me:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(onClick = { uriHandler.openUri("mailto:saishovan2@gmail.com") }) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_google_gmail),
-                                contentDescription = "Email",
-                                modifier = Modifier.size(32.dp),
-                                tint = Color(0xFFEA4335)
-                            )
-                        }
-                        Text("Email", style = MaterialTheme.typography.labelSmall)
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(onClick = { uriHandler.openUri("https://www.linkedin.com/in/sai-shovan-narayan-sarangi") }) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_linkedin),
-                                contentDescription = "LinkedIn",
-                                modifier = Modifier.size(32.dp),
-                                tint = Color(0xFF0A66C2)
-                            )
-                        }
-                        Text("LinkedIn", style = MaterialTheme.typography.labelSmall)
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(onClick = { uriHandler.openUri("https://github.com/shovan446") }) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_github),
-                                contentDescription = "GitHub",
-                                modifier = Modifier.size(32.dp),
-                                tint = MaterialTheme.colorScheme.onBackground
-                            )
-                        }
-                        Text("GitHub", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-        }
-
         Spacer(modifier = Modifier.height(14.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         Spacer(modifier = Modifier.height(14.dp))
@@ -1903,6 +1947,59 @@ fun SettingsTabScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("About Developer", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(12.dp))
+
+        GlassCard(isDarkMode = isDarkMode, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "Connect with me:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        IconButton(onClick = { uriHandler.openUri("mailto:saishovan2@gmail.com") }) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_google_gmail),
+                                contentDescription = "Email",
+                                modifier = Modifier.size(32.dp),
+                                tint = Color(0xFFEA4335)
+                            )
+                        }
+                        Text("Email", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        IconButton(onClick = { uriHandler.openUri("https://www.linkedin.com/in/sai-shovan-narayan-sarangi") }) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_linkedin),
+                                contentDescription = "LinkedIn",
+                                modifier = Modifier.size(32.dp),
+                                tint = Color(0xFF0A66C2)
+                            )
+                        }
+                        Text("LinkedIn", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        IconButton(onClick = { uriHandler.openUri("https://github.com/shovan446") }) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_github),
+                                contentDescription = "GitHub",
+                                modifier = Modifier.size(32.dp),
+                                tint = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+                        Text("GitHub", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(32.dp))
 
         Column(
@@ -1910,7 +2007,7 @@ fun SettingsTabScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Version 2.0.0",
+                text = "Version 2.1.0",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.42f)
             )
@@ -1922,5 +2019,7 @@ fun SettingsTabScreen(
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.48f)
             )
         }
+
+        Spacer(modifier = Modifier.navigationBarsPadding().height(116.dp))
     }
 }

@@ -84,4 +84,18 @@ interface AttendanceDao {
 
     @Query("SELECT * FROM attendance_records WHERE dateLong = :date")
     suspend fun getRecordsForDateOnce(date: Long): List<AttendanceRecord>
+
+    @androidx.room.Transaction
+    @Query("SELECT * FROM timetable WHERE dayOfWeek = :dayOfWeek ORDER BY slotId ASC")
+    fun getScheduledSlotsForDay(dayOfWeek: Int): Flow<List<ScheduledSlotWithSubject>>
+
+    @androidx.room.Transaction
+    @Query("SELECT * FROM timetable WHERE dayOfWeek = :dayOfWeek ORDER BY slotId ASC")
+    suspend fun getScheduledSlotsForDayOnce(dayOfWeek: Int): List<ScheduledSlotWithSubject>
+
+    @Query("DELETE FROM attendance_records WHERE subjectId = :subjectId AND slotId = :slotId AND dateLong = :dateLong")
+    suspend fun deleteRecordForSlot(subjectId: Int, slotId: Int, dateLong: Long)
+
+    @Query("DELETE FROM timetable WHERE slotId = :slotId")
+    suspend fun deleteTimetableSlotById(slotId: Int)
 }
